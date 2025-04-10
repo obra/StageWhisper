@@ -352,22 +352,18 @@ func requestPermissions() -> Bool {
     return true
 }
 
-func main() {
-    // Always start in dictation mode (this is a GUI app)
-    print("Starting StageWhisper...")
-    print("Models will be automatically downloaded if needed")
-    
-    // Set verbose mode for now (helpful during development)
-    Config.verbose = true
-    
-    // Start dictation mode
-    startDictationMode()
-}
-
 // Create an NSApplicationDelegate class to handle application launch
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        main()
+        // Always start in dictation mode (this is a GUI app)
+        print("Starting StageWhisper...")
+        print("Models will be automatically downloaded if needed")
+        
+        // Set verbose mode for now (helpful during development)
+        Config.verbose = true
+        
+        // Start dictation mode
+        startDictationMode()
     }
     
     func applicationWillTerminate(_ notification: Notification) {
