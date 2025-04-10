@@ -292,14 +292,16 @@ class WhisperTranscriber {
             
             // Start a task to process audio in chunks with adaptive timing
             processingTask = Task {
-                // Stagger the processing slightly to allow audio buffer to fill initially
-                try await Task.sleep(nanoseconds: 300_000_000) // Wait 300ms before first processing
+                // Start processing almost immediately - just minimal delay to allow first audio samples
+                try await Task.sleep(nanoseconds: 50_000_000) // Wait just 50ms before first processing
+                print("CRITICAL: Starting first transcription processing run")
                 
                 lastProcessTime = Date()
                 
                 while isTranscribing && !Task.isCancelled {
-                    // Check if we have enough audio data
-                    if audioBuffer.count > Config.sampleRate / 8 { // Just 0.125s of audio needed to check
+                    // Start processing with almost any amount of audio data
+                    if audioBuffer.count > Config.sampleRate / 32 { // Just 0.03s of audio to start processing 
+                        print("CRITICAL: Have \(audioBuffer.count) samples, starting transcription cycle")
                         // Check if speech is detected to adjust processing frequency
                         speechDetected = detectSpeech(in: audioBuffer)
                         
@@ -352,7 +354,15 @@ class WhisperTranscriber {
         // Make a copy of the buffer to avoid race conditions
         // Get the last N seconds of audio for transcription (sliding window)
         let bufferSizeToTranscribe = min(Int(bufferTimeInterval * Double(Config.sampleRate)), audioBuffer.count)
-        guard bufferSizeToTranscribe > Config.sampleRate / 4 else { return } // Need at least 0.25 seconds
+        
+        // Start processing with minimal audio - we need immediate feedback
+        // Process with as little as 0.1 seconds of audio
+        guard bufferSizeToTranscribe > Config.sampleRate / 10 else { 
+            print("CRITICAL: Buffer too small to process: \(bufferSizeToTranscribe) samples")
+            return 
+        }
+        
+        print("CRITICAL: Processing \(bufferSizeToTranscribe) samples")
         
         let startIndex = max(0, audioBuffer.count - bufferSizeToTranscribe)
         let bufferCopy = Array(audioBuffer[startIndex...])

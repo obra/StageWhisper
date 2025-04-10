@@ -134,41 +134,54 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     // MARK: - TranscriptionDelegate methods
     
     func transcriptionDidUpdate(text: String, isFinal: Bool) {
-        // Print transcription updates for debugging
         if isFinal {
             Swift.print("FINAL TRANSCRIPTION: \"\(text)\"")
         } else {
-            Swift.print("Intermediate transcription: \"\(text)\"")
+            Swift.print("CRITICAL: Received intermediate transcription: \"\(text)\"")
         }
         
-        // CRITICAL: This is where real-time insertion happens
-        // The issue is we're now explicitly inserting text AS it's recognized
-        
+        // CRITICAL: Make sure we're handling text insertion immediately
         // Don't try to insert empty text
         if !text.isEmpty {
+            Swift.print("CRITICAL: Have text to process: \"\(text)\"")
+            
+            // A critical check - we must verify isRecording state
             if isRecording || isFinal {
-                // We have text and we're recording or finalizing - determine what to insert
-                let oldText = previousTranscription  // Use previousTranscription, not currentTranscription
+                Swift.print("CRITICAL: Recording state ok, proceeding with insertion...")
+                
+                // We have text and we're recording - determine what to insert
+                let oldText = previousTranscription  
                 
                 // Calculate what's new in this transcription compared to previous one
                 if oldText.isEmpty {
                     // First transcription - insert everything
-                    Swift.print("REAL-TIME: First transcription chunk - inserting all: \"\(text)\"")
+                    Swift.print("CRITICAL: First transcription chunk - inserting all: \"\(text)\"")
                     self.insertPartialTranscription(text)
                 } else if text != oldText {
                     // Only insert what's new
                     let newText = self.getNewTextToInsert(oldText: oldText, newText: text)
                     if !newText.isEmpty {
-                        Swift.print("REAL-TIME: Inserting new text: \"\(newText)\"")
+                        Swift.print("CRITICAL: Inserting new text: \"\(newText)\"")
                         self.insertPartialTranscription(newText)
+                    } else {
+                        Swift.print("WARNING: Diff calculation produced empty new text")
                     }
+                } else {
+                    Swift.print("INFO: No new text to insert, text unchanged")
                 }
+            } else {
+                Swift.print("WARNING: Not inserting text because isRecording=\(isRecording), isFinal=\(isFinal)")
             }
+        } else {
+            Swift.print("WARNING: Empty transcription text received")
         }
         
         // Store the new transcription AFTER processing
         previousTranscription = text
         currentTranscription = text
+        
+        // Force log flush to see logs immediately
+        fflush(stdout)
         
         // Update UI with the current partial transcription for immediate feedback
         if let statusItem = statusItem, let button = statusItem.button {
@@ -327,7 +340,7 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         hotKey.keyDownHandler = { [weak self] in
             guard let self = self, !self.isRecording else { return }
             
-            Swift.print("Recording started...")
+            Swift.print("CRITICAL: KEY DOWN - Recording started")
             if let statusItem = self.statusItem, let button = statusItem.button {
                 button.title = self.recordingIcon
             }
@@ -346,10 +359,16 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
             self.currentTranscription = ""
             self.previousTranscription = ""
             
-            // Start streaming transcription
+            // CRITICAL: Set recording flag BEFORE starting the recording
+            // to ensure we pick up and insert early transcriptions
+            self.isRecording = true
+            
+            Swift.print("CRITICAL: Starting streaming recording...")
+            
+            // Start streaming transcription right away
             recorder.startStreamingRecording(with: transcriber)
             
-            self.isRecording = true
+            Swift.print("CRITICAL: Streaming transcription started")
         }
         
         // Key up handler - stop recording and process transcription
