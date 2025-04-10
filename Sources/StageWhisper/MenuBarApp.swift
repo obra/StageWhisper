@@ -252,15 +252,14 @@ func startDictationApp() {
 
 // Start the UI part of the app
 func startDictationAppUI() {
-    let app = NSApplication.shared
     let delegate = DictationAppDelegate()
-    app.delegate = delegate
     
-    // Run as accessory app (no dock icon)
-    app.setActivationPolicy(.accessory)
+    // Since we're already running within the NSApplication context,
+    // we just need to register our dictation delegate to handle the UI
+    NSApp.activate(ignoringOtherApps: true)
     
-    // Start the application
-    app.activate(ignoringOtherApps: true)
+    // Initialize the delegate
+    delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    
     print("Menu bar app started - look for the 🎤 icon in your menu bar")
-    app.run()
 }

@@ -369,9 +369,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         main()
     }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        print("StageWhisper is shutting down...")
+    }
 }
 
-// Run the program as a macOS app
+// Since we're building as a command-line tool but want to run as an app,
+// we need to manually set up the application
+let app = NSApplication.shared
 let delegate = AppDelegate()
-NSApplication.shared.delegate = delegate
-_ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
+app.delegate = delegate
+
+// Run the app without a dock icon
+app.setActivationPolicy(.accessory)
+
+// Start the application
+app.run()

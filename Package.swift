@@ -22,7 +22,7 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit")
             ],
             resources: [
-                .process("Resources")
+                .process("Resources/Assets.xcassets")
             ])
     ]
 )
