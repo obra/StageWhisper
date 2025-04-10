@@ -9,12 +9,14 @@ import AVFoundation
 import ObjectiveC
 
 // Menu bar app delegate
-class DictationAppDelegate: NSObject, NSApplicationDelegate {
+class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private var recorder: AudioRecorder?
     private var isRecording = false
     private var whisperTranscriber: WhisperTranscriber?
+    private var currentTranscription: String = ""
+    private var isStreamingMode = true  // Default to streaming mode
     
     // Prevent deallocation while app is running
     private var retainSelf: DictationAppDelegate?
@@ -50,6 +52,9 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
     private func setupWhisper() {
         // Initialize WhisperKit transcriber
         whisperTranscriber = WhisperTranscriber.createDefault()
+        
+        // Set the transcription delegate to self
+        whisperTranscriber?.delegate = self
         
         guard let statusItem = statusItem else {
             print("ERROR: Status item not initialized")
@@ -128,6 +133,48 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    // MARK: - TranscriptionDelegate methods
+    
+    func transcriptionDidUpdate(text: String, isFinal: Bool) {
+        // Update current transcription
+        currentTranscription = text
+        
+        // Update UI to show we have some text
+        if let statusItem = statusItem, let button = statusItem.button {
+            // Keep the recording icon, but add a text indicator
+            button.title = "\(recordingIcon) ..."
+            button.toolTip = "Transcribing: \(text.prefix(30))..."
+        }
+        
+        // Print the current transcription in verbose mode
+        if Config.verbose {
+            print("Transcription updated: \"\(text)\"")
+        }
+        
+        // If it's the final result and we're still recording, 
+        // we don't need to do anything special here as the
+        // key-up handler will take care of inserting the text
+    }
+    
+    func transcriptionDidError(error: Error) {
+        print("ERROR: Transcription error: \(error)")
+        
+        // Update UI to show error
+        if let statusItem = statusItem, let button = statusItem.button {
+            button.title = errorIcon
+            button.toolTip = "Transcription error: \(error.localizedDescription)"
+            
+            // Restore normal icon after a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self = self, let statusItem = self.statusItem else { return }
+                if let button = statusItem.button {
+                    button.title = self.micIcon
+                    button.toolTip = "StageWhisper - Press ⌘⇧Z to dictate"
+                }
+            }
+        }
+    }
+    
     private func setupMenuBar() {
         // Create the status item in the menu bar
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -177,11 +224,27 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             
-            recorder.startRecording()
+            guard let transcriber = self.whisperTranscriber else {
+                print("ERROR: Transcriber not initialized")
+                return
+            }
+            
+            // Reset current transcription
+            self.currentTranscription = ""
+            
+            // Start recording in streaming or normal mode based on setting
+            if isStreamingMode {
+                // Start recording with streaming transcription
+                recorder.startStreamingRecording(with: transcriber)
+            } else {
+                // Start recording in normal mode
+                recorder.startRecording()
+            }
+            
             self.isRecording = true
         }
         
-        // Key up handler - stop recording and transcribe
+        // Key up handler - stop recording and process transcription
         hotKey.keyUpHandler = { [weak self] in
             guard let self = self else {
                 print("ERROR: Self is nil in keyUpHandler")
@@ -193,9 +256,9 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             
-            print("Recording stopped. Transcribing...")
+            print("Recording stopped. Finalizing transcription...")
             
-            // Update UI
+            // Update UI back to normal
             if let statusItem = self.statusItem, let button = statusItem.button {
                 button.title = self.micIcon
             }
@@ -208,45 +271,71 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             
-            // Stop recording and get the audio file URL
-            if let audioURL = recorder.stopRecording() {
-                // Process transcription asynchronously
-                Task {
-                    print("Processing audio file: \(audioURL.lastPathComponent)")
+            if isStreamingMode {
+                // In streaming mode, we already have the transcription
+                let transcription = self.currentTranscription
+                
+                // Stop the streaming transcription
+                recorder.stopRecording()
+                
+                // Insert the transcribed text
+                if !transcription.isEmpty {
+                    print("Transcription complete: \"\(transcription)\"")
                     
-                    // Check transcriber is valid
-                    guard let transcriber = self.whisperTranscriber else {
-                        print("ERROR: WhisperTranscriber is nil")
-                        return
-                    }
-                    
-                    // Transcribe audio
-                    print("Starting transcription...")
-                    if let transcription = await transcriber.transcribeAudioFile(at: audioURL) {
-                        print("Transcription complete: \"\(transcription)\"")
+                    // Insert text at cursor on main thread
+                    DispatchQueue.main.async {
+                        print("Inserting text at cursor...")
+                        let success = insertTextAtCursor(transcription)
                         
-                        // If empty transcription, don't try to insert
-                        guard !transcription.isEmpty else {
-                            print("WARNING: Empty transcription result - nothing to insert")
+                        if !success {
+                            print("Failed to insert text, trying alternative method...")
+                            _ = typeTextDirectly(transcription)
+                        }
+                    }
+                } else {
+                    print("WARNING: Empty transcription result - nothing to insert")
+                }
+            } else {
+                // In file mode, we need to transcribe the audio file
+                if let audioURL = recorder.stopRecording() {
+                    // Process transcription asynchronously
+                    Task {
+                        print("Processing audio file: \(audioURL.lastPathComponent)")
+                        
+                        // Check transcriber is valid
+                        guard let transcriber = self.whisperTranscriber else {
+                            print("ERROR: WhisperTranscriber is nil")
                             return
                         }
                         
-                        // Insert text at cursor on main thread
-                        DispatchQueue.main.async {
-                            print("Inserting text at cursor...")
-                            let success = insertTextAtCursor(transcription)
+                        // Transcribe audio
+                        print("Starting transcription...")
+                        if let transcription = await transcriber.transcribeAudioFile(at: audioURL) {
+                            print("Transcription complete: \"\(transcription)\"")
                             
-                            if !success {
-                                print("Failed to insert text, trying alternative method...")
-                                _ = typeTextDirectly(transcription)
+                            // If empty transcription, don't try to insert
+                            guard !transcription.isEmpty else {
+                                print("WARNING: Empty transcription result - nothing to insert")
+                                return
                             }
+                            
+                            // Insert text at cursor on main thread
+                            DispatchQueue.main.async {
+                                print("Inserting text at cursor...")
+                                let success = insertTextAtCursor(transcription)
+                                
+                                if !success {
+                                    print("Failed to insert text, trying alternative method...")
+                                    _ = typeTextDirectly(transcription)
+                                }
+                            }
+                        } else {
+                            print("ERROR: Transcription failed or returned nil")
                         }
-                    } else {
-                        print("ERROR: Transcription failed or returned nil")
                     }
+                } else {
+                    print("ERROR: No audio captured - recorder.stopRecording() returned nil")
                 }
-            } else {
-                print("ERROR: No audio captured - recorder.stopRecording() returned nil")
             }
         }
         

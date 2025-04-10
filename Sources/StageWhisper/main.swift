@@ -129,11 +129,22 @@ func typeTextDirectly(_ text: String) -> Bool {
 // MARK: - Audio Recording
 
 class AudioRecorder {
+    // Audio engine and format
     private let audioEngine = AVAudioEngine()
     private let outputFormat: AVAudioFormat
-    private var audioFile: AVAudioFile?
+    
+    // Recording state
     private var isRecording = false
     private var bufferList: [AVAudioPCMBuffer] = []
+    
+    // Streaming mode
+    private var isStreamingMode = false
+    private var transcriber: WhisperTranscriber?
+    
+    // Callbacks for various events
+    var onStreamingStart: (() -> Void)?
+    var onStreamingStop: (() -> Void)?
+    var onAudioProcessed: ((URL) -> Void)?
     
     init() {
         // Configure audio format for Whisper (16kHz mono PCM)
@@ -151,16 +162,44 @@ class AudioRecorder {
         }
         
         self.outputFormat = format
+        
+        // Configure audio session
+        setupAudioSession()
     }
     
+    private func setupAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.record, mode: .default)
+            try audioSession.setActive(true)
+        } catch {
+            print("Failed to set up audio session: \(error)")
+        }
+    }
+    
+    // Start recording in normal mode (saving to file)
     func startRecording() {
-        // Delete any existing recording
-        if FileManager.default.fileExists(atPath: Config.tempAudioPath) {
+        startRecordingInternal(streamingMode: false)
+    }
+    
+    // Start recording in streaming mode
+    func startStreamingRecording(with transcriber: WhisperTranscriber) {
+        self.transcriber = transcriber
+        startRecordingInternal(streamingMode: true)
+    }
+    
+    // Internal function to start recording
+    private func startRecordingInternal(streamingMode: Bool) {
+        // Delete any existing recording if in file mode
+        if !streamingMode && FileManager.default.fileExists(atPath: Config.tempAudioPath) {
             try? FileManager.default.removeItem(atPath: Config.tempAudioPath)
         }
         
         // Clear buffer list
         bufferList.removeAll()
+        
+        // Set mode
+        isStreamingMode = streamingMode
         
         do {
             let inputNode = audioEngine.inputNode
@@ -175,17 +214,32 @@ class AudioRecorder {
             inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
                 guard let self = self, self.isRecording else { return }
                 
-                // Store the buffer for later processing
-                self.bufferList.append(buffer)
+                // In non-streaming mode, store the buffer for later processing
+                if !self.isStreamingMode {
+                    self.bufferList.append(buffer)
+                }
+                // In streaming mode, the audio engine is already connected to the transcriber
             }
             
-            // Start engine
-            audioEngine.prepare()
-            try audioEngine.start()
+            // If streaming mode, connect to the transcriber
+            if streamingMode, let transcriber = transcriber {
+                if !transcriber.startStreamingTranscription(audioEngine: audioEngine) {
+                    print("ERROR: Failed to start streaming transcription")
+                    return
+                }
+                
+                // Signal that streaming has started
+                onStreamingStart?()
+            } else {
+                // Start engine (in streaming mode, the transcriber starts it)
+                audioEngine.prepare()
+                try audioEngine.start()
+            }
+            
             isRecording = true
             
             if Config.verbose {
-                print("Started recording to memory buffer")
+                print("Started recording in \(streamingMode ? "streaming" : "file") mode")
             }
             
         } catch {
@@ -195,13 +249,24 @@ class AudioRecorder {
         }
     }
     
+    // Stop recording and return the file URL if in file mode
     func stopRecording() -> URL? {
         guard isRecording else { return nil }
         
         isRecording = false
+        
+        // Stop audio engine
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         
+        // If in streaming mode, stop the transcriber
+        if isStreamingMode {
+            transcriber?.stopStreamingTranscription()
+            onStreamingStop?()
+            return nil
+        }
+        
+        // In file mode, save the buffers to disk
         if Config.verbose {
             print("Stopped recording - writing \(bufferList.count) buffers to disk")
         }
@@ -212,9 +277,13 @@ class AudioRecorder {
             return nil
         }
         
+        // Notify about the processed audio file
+        onAudioProcessed?(fileURL)
+        
         return fileURL
     }
     
+    // Save the recorded buffers to disk (only used in file mode)
     private func saveBuffersToDisk() -> URL? {
         guard !bufferList.isEmpty else {
             print("No audio data captured")
@@ -287,6 +356,11 @@ class AudioRecorder {
         }
         
         return fileURL
+    }
+    
+    // Get the audio engine (needed for streaming)
+    func getAudioEngine() -> AVAudioEngine {
+        return audioEngine
     }
 }
 
