@@ -368,34 +368,92 @@ class WhisperTranscriber {
         let bufferCopy = Array(audioBuffer[startIndex...])
         
         do {
-            // Ultra low-latency optimized options
+            // Force immediate transcription mode with all possible real-time options
             let options = DecodingOptions(
                 task: .transcribe,
                 temperature: 0,
-                sampleLength: min(150, max(40, bufferSizeToTranscribe / 100)), // Smaller sample length for faster decoding
+                sampleLength: 25, // Ultra-small sample length to force immediate results
                 skipSpecialTokens: true,
                 withoutTimestamps: true,
-                compressionRatioThreshold: 1.8,  // Lower threshold for faster processing
-                logProbThreshold: -0.6,          // More permissive for partial utterances
-                noSpeechThreshold: 0.6           // More permissive to detect speech sooner
+                compressionRatioThreshold: 1.0,  // Force results regardless of quality
+                logProbThreshold: -1.0,          // Super permissive to catch any sound
+                noSpeechThreshold: 1.0,          // Force recognition even with minimal audio
+                beamSize: 1                      // Ultra fast recognition, minimal complexity
             )
             
-            let results = try await whisperKit.transcribe(audioArray: bufferCopy, decodeOptions: options)
+            // Check the model state before transcription
+            print("CRITICAL: WhisperKit state before transcription: \(whisperKit.modelState.rawValue)")
+            
+            // Try to transcribe with a timeout
+            var results: [TranscriptionResult] = []
+            
+            // Run transcription with a short timeout to ensure it doesn't hang
+            do {
+                let transcribeTask = Task {
+                    return try await whisperKit.transcribe(audioArray: bufferCopy, decodeOptions: options)
+                }
+                
+                // Only wait 250ms max for transcription
+                results = try await withThrowingTaskGroup(of: [TranscriptionResult].self) { group in
+                    // Transcription task
+                    group.addTask {
+                        return try await transcribeTask.value
+                    }
+                    
+                    // Timeout task
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 250_000_000) // 250ms timeout
+                        print("CRITICAL: Transcription timed out, cancelling")
+                        transcribeTask.cancel()
+                        throw NSError(domain: "Transcriber", code: 1, userInfo: [NSLocalizedDescriptionKey: "Transcription timed out"])
+                    }
+                    
+                    // Take the first result
+                    do {
+                        if let taskResult = try await group.next() {
+                            group.cancelAll()
+                            return taskResult
+                        }
+                    } catch {
+                        group.cancelAll()
+                        print("CRITICAL: Error in transcription: \(error)")
+                    }
+                    
+                    return [] // Default empty result
+                }
+            } catch {
+                print("CRITICAL: Transcription task failed with error: \(error)")
+                results = []
+            }
             
             // Process transcription results
-            if !results.isEmpty, let result = results.first, !result.text.isEmpty {
+            if !results.isEmpty, let result = results.first {
+                // CRITICAL CHANGE: Always try to generate a result, even if empty or partial
+                var transcriptionText = result.text
+                
+                if transcriptionText.isEmpty && speechDetected {
+                    // If speech is detected but no text yet, generate placeholder text
+                    // to indicate that we're listening (will be replaced with real text)
+                    // Only do this after we've accumulated enough audio
+                    if audioBuffer.count > Config.sampleRate * 1 {
+                        transcriptionText = "(listening...)"
+                    }
+                } else if !transcriptionText.isEmpty {
+                    print("CRITICAL: Got actual transcription text: \"\(transcriptionText)\"")
+                }
+                
                 // Update current transcription
-                currentTranscription = result.text
-                
-                // Notify delegate
-                DispatchQueue.main.async { [weak self] in
-                    self?.delegate?.transcriptionDidUpdate(text: result.text, isFinal: false)
+                if !transcriptionText.isEmpty {
+                    currentTranscription = transcriptionText
+                    
+                    // Notify delegate IMMEDIATELY to show text
+                    print("CRITICAL: Sending transcription update to delegate")
+                    DispatchQueue.main.async { [weak self] in
+                        self?.delegate?.transcriptionDidUpdate(text: transcriptionText, isFinal: false)
+                    }
                 }
-                
-                // Log the result
-                if Config.verbose {
-                    print("Transcription update: \"\(result.text)\"")
-                }
+            } else {
+                print("CRITICAL: No results from transcription or empty results array")
             }
         } catch {
             print("ERROR during transcription: \(error)")
