@@ -6,14 +6,18 @@ import AppKit
 import ApplicationServices
 import HotKey
 import AVFoundation
+import ObjectiveC
 
 // Menu bar app delegate
 class DictationAppDelegate: NSObject, NSApplicationDelegate {
-    private var statusItem: NSStatusItem!
-    private var hotKey: HotKey!
-    private var recorder: AudioRecorder!
+    private var statusItem: NSStatusItem?
+    private var hotKey: HotKey?
+    private var recorder: AudioRecorder?
     private var isRecording = false
-    private var whisperTranscriber: WhisperTranscriber!
+    private var whisperTranscriber: WhisperTranscriber?
+    
+    // Prevent deallocation while app is running
+    private var retainSelf: DictationAppDelegate?
     
     // UI elements
     let micIcon = "🎤"
@@ -26,19 +30,31 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("Starting dictation mode with hotkey \(Config.hotkeyModifiers.description)+\(Config.hotkeyKey.description)")
         
-        // Initialize everything - order matters!
-        // First create the menu bar item
-        setupMenuBar()
-        // Then initialize other components
-        setupRecorder()
-        registerHotkey()
-        // Initialize WhisperKit last (will update the menu)
-        setupWhisper()
+        // Retain self to prevent deallocation
+        retainSelf = self
+        
+        do {
+            // Initialize everything - order matters!
+            // First create the menu bar item
+            setupMenuBar()
+            // Then initialize other components
+            setupRecorder()
+            registerHotkey()
+            // Initialize WhisperKit last (will update the menu)
+            setupWhisper()
+        } catch {
+            print("ERROR: Failed to initialize application: \(error)")
+        }
     }
     
     private func setupWhisper() {
         // Initialize WhisperKit transcriber
         whisperTranscriber = WhisperTranscriber.createDefault()
+        
+        guard let statusItem = statusItem else {
+            print("ERROR: Status item not initialized")
+            return
+        }
         
         // Show loading in menu bar
         if let button = statusItem.button {
@@ -56,7 +72,8 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
                     if let progress = notification.userInfo?["progress"] as? Double,
                        let status = notification.userInfo?["status"] as? String,
                        let self = self,
-                       let button = self.statusItem.button {
+                       let statusItem = self.statusItem,
+                       let button = statusItem.button {
                         // Update menu bar with download progress
                         let progressPercent = Int(progress * 100)
                         button.title = "\(self.downloadingIcon) \(progressPercent)%"
@@ -68,22 +85,29 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
             print("Loading WhisperKit model...")
             print("This may take some time as the model will be downloaded automatically...")
             
+            guard let whisperTranscriber = whisperTranscriber else {
+                print("ERROR: Transcriber not initialized")
+                return
+            }
+            
             // Let WhisperKit handle the auto-download
             let modelLoaded = await whisperTranscriber.loadModel()
             
             // Update UI based on result
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                guard let statusItem = self.statusItem else { return }
                 
                 if modelLoaded {
                     print("WhisperKit model initialized successfully!")
-                    if let button = self.statusItem.button {
+                    if let button = statusItem.button {
                         button.title = self.readyIcon
                         button.toolTip = "WhisperKit ready - Press ⌘⇧Z to dictate"
                         
                         // Animate back to normal icon after a delay
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                            if let button = self.statusItem.button {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                            guard let self = self, let statusItem = self.statusItem else { return }
+                            if let button = statusItem.button {
                                 button.title = self.micIcon
                                 button.toolTip = "StageWhisper - Press ⌘⇧Z to dictate"
                             }
@@ -95,7 +119,7 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
                     print("You may want to try again with a better internet connection or")
                     print("check if the model server is accessible.")
                     
-                    if let button = self.statusItem.button {
+                    if let button = statusItem.button {
                         button.title = self.errorIcon
                         button.toolTip = "WhisperKit initialization failed - Model files are missing"
                     }
@@ -107,6 +131,11 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenuBar() {
         // Create the status item in the menu bar
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        
+        guard let statusItem = statusItem else {
+            print("ERROR: Failed to create status item")
+            return
+        }
         
         if let button = statusItem.button {
             button.title = micIcon
@@ -129,16 +158,26 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
     private func registerHotkey() {
         hotKey = HotKey(key: Config.hotkeyKey, modifiers: Config.hotkeyModifiers)
         
+        guard let hotKey = hotKey else {
+            print("ERROR: Failed to create hotkey")
+            return
+        }
+        
         // Key down handler - start recording
         hotKey.keyDownHandler = { [weak self] in
             guard let self = self, !self.isRecording else { return }
             
             print("Recording started...")
-            if let button = self.statusItem.button {
+            if let statusItem = self.statusItem, let button = statusItem.button {
                 button.title = self.recordingIcon
             }
             
-            self.recorder.startRecording()
+            guard let recorder = self.recorder else {
+                print("ERROR: Recorder not initialized")
+                return
+            }
+            
+            recorder.startRecording()
             self.isRecording = true
         }
         
@@ -157,7 +196,7 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate {
             print("Recording stopped. Transcribing...")
             
             // Update UI
-            if let button = self.statusItem.button {
+            if let statusItem = self.statusItem, let button = statusItem.button {
                 button.title = self.micIcon
             }
             
@@ -252,14 +291,18 @@ func startDictationApp() {
 
 // Start the UI part of the app
 func startDictationAppUI() {
-    let delegate = DictationAppDelegate()
+    // Create the delegate
+    let dictationDelegate = DictationAppDelegate()
+    
+    // Store a reference to the dictation delegate
+    objc_setAssociatedObject(NSApp, "dictationDelegate", dictationDelegate, .OBJC_ASSOCIATION_RETAIN)
     
     // Since we're already running within the NSApplication context,
     // we just need to register our dictation delegate to handle the UI
     NSApp.activate(ignoringOtherApps: true)
     
     // Initialize the delegate
-    delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+    dictationDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
     
     print("Menu bar app started - look for the 🎤 icon in your menu bar")
 }
