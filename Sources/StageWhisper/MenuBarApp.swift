@@ -136,31 +136,41 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     private var previousTranscription: String = ""
     
     func transcriptionDidUpdate(text: String, isFinal: Bool) {
-        // Store the new transcription
-        let oldTranscription = currentTranscription
-        currentTranscription = text
-        
-        // Print all transcription updates for debugging
+        // Print transcription updates for debugging
         if isFinal {
             Swift.print("FINAL TRANSCRIPTION: \"\(text)\"")
         } else {
             Swift.print("Intermediate transcription: \"\(text)\"")
-            
-            // Get just the new part of the transcription to insert
-            if isRecording && !text.isEmpty {
-                // If we have a non-empty transcription and we're still recording,
-                // determine what's new to insert
-                if oldTranscription.isEmpty {
+        }
+        
+        // CRITICAL: This is where real-time insertion happens
+        // The issue is we're now explicitly inserting text AS it's recognized
+        
+        // Don't try to insert empty text
+        if !text.isEmpty {
+            if isRecording || isFinal {
+                // We have text and we're recording or finalizing - determine what to insert
+                let oldText = previousTranscription  // Use previousTranscription, not currentTranscription
+                
+                // Calculate what's new in this transcription compared to previous one
+                if oldText.isEmpty {
                     // First transcription - insert everything
+                    Swift.print("REAL-TIME: First transcription chunk - inserting all: \"\(text)\"")
                     self.insertPartialTranscription(text)
-                } else if text != oldTranscription {
-                    // Try to find what's been added
-                    let newText = self.getNewTextToInsert(oldText: oldTranscription, newText: text)
+                } else if text != oldText {
+                    // Only insert what's new
+                    let newText = self.getNewTextToInsert(oldText: oldText, newText: text)
                     if !newText.isEmpty {
+                        Swift.print("REAL-TIME: Inserting new text: \"\(newText)\"")
                         self.insertPartialTranscription(newText)
                     }
                 }
             }
+        }
+        
+        // Store the new transcription AFTER processing
+        previousTranscription = text
+        currentTranscription = text
             
             // Update UI with the current partial transcription for immediate feedback
             if let statusItem = statusItem, let button = statusItem.button {
@@ -280,13 +290,31 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         
         Swift.print("REAL-TIME: Inserting partial text: \"\(text)\"")
         
-        // Insert text at cursor on main thread (must be main thread for UI operations)
-        DispatchQueue.main.async {
+        // CRITICAL FIX: Insert text at cursor IMMEDIATELY
+        // Check if we're already on the main thread
+        if Thread.isMainThread {
+            // Already on main thread, execute directly
+            Swift.print("REAL-TIME: Already on main thread, inserting NOW")
             let success = insertTextAtCursor(text)
             
             if !success {
-                Swift.print("Failed to insert partial text, trying alternative method...")
+                Swift.print("REAL-TIME: Primary insertion failed, trying direct typing...")
                 _ = typeTextDirectly(text)
+            } else {
+                Swift.print("REAL-TIME: Text inserted successfully!")
+            }
+        } else {
+            // Need to switch to main thread
+            DispatchQueue.main.async {
+                Swift.print("REAL-TIME: Switching to main thread to insert NOW")
+                let success = insertTextAtCursor(text)
+                
+                if !success {
+                    Swift.print("REAL-TIME: Primary insertion failed, trying direct typing...")
+                    _ = typeTextDirectly(text)
+                } else {
+                    Swift.print("REAL-TIME: Text inserted successfully!")
+                }
             }
         }
     }
@@ -361,42 +389,19 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
                 Swift.print("KEYUP HANDLER: Stopping recording and waiting for final transcription...")
                 
                 // Store what we have already inserted up to this point
-                let previouslyInserted = self.currentTranscription
+                // We're using previousTranscription which is already tracking what we've inserted
+                // This prevents duplications between the real-time insertions and final insertions
                 
-                // Stop the streaming transcription
+                // Stop the streaming transcription first
                 recorder.stopRecording()
                 
-                // Set a delay to allow final transcription processing
+                // Set a delay to allow for final transcription processing
                 Swift.print("KEYUP HANDLER: Waiting for final transcription to complete...")
                 try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 second delay
                 
-                // Get the final transcription after processing is done
-                let finalTranscription = self.currentTranscription
-                
-                if finalTranscription.isEmpty {
-                    Swift.print("KEYUP HANDLER: WARNING - Empty transcription result - nothing to insert")
-                } else if finalTranscription != previouslyInserted {
-                    Swift.print("KEYUP HANDLER: Final transcription differs from what was already inserted")
-                    
-                    // Calculate what new text to insert
-                    let newText = self.getNewTextToInsert(oldText: previouslyInserted, newText: finalTranscription)
-                    
-                    if !newText.isEmpty {
-                        Swift.print("KEYUP HANDLER: Inserting additional final text: \"\(newText)\"")
-                        
-                        // Insert just the new text on main thread
-                        DispatchQueue.main.async {
-                            let success = insertTextAtCursor(newText)
-                            
-                            if !success {
-                                Swift.print("KEYUP HANDLER: Primary insertion failed, trying alternative method...")
-                                _ = typeTextDirectly(newText)
-                            }
-                            
-                            Swift.print("KEYUP HANDLER: Additional text insertion complete")
-                        }
-                    }
-                }
+                // No need to insert anything else at key-up since we're already inserting in real-time
+                // The transcriptionDidUpdate delegate will handle the final transcription as well
+                Swift.print("KEYUP HANDLER: Recording stopped, real-time insertion complete")
                 
                 // Update UI back to normal
                 DispatchQueue.main.async {
