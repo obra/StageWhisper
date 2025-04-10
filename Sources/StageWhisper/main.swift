@@ -168,27 +168,23 @@ class AudioRecorder {
     func startStreamingRecording(with transcriber: WhisperTranscriber) {
         self.transcriber = transcriber
         
-        do {
-            print("CRITICAL: Starting audio recording for streaming transcription")
-            
-            // Start the transcription IMMEDIATELY 
-            if !transcriber.startStreamingTranscription(audioEngine: audioEngine) {
-                print("ERROR: Failed to start streaming transcription")
-                return
-            }
-            
-            print("CRITICAL: Transcription engine started successfully")
-            
-            // Signal that streaming has started
-            onStreamingStart?()
-            
-            isRecording = true
-            
-            // Force a log flush to make sure we see the logs right away
-            fflush(stdout)
-        } catch {
-            print("ERROR: Failed to start recording: \(error)")
+        print("CRITICAL: Starting audio recording for streaming transcription")
+        
+        // Start the transcription IMMEDIATELY 
+        if !transcriber.startStreamingTranscription(audioEngine: audioEngine) {
+            print("ERROR: Failed to start streaming transcription")
+            return
         }
+        
+        print("CRITICAL: Transcription engine started successfully")
+        
+        // Signal that streaming has started
+        onStreamingStart?()
+        
+        isRecording = true
+        
+        // Force a log flush to make sure we see the logs right away
+        fflush(stdout)
     }
     
     // Stop recording and clean up resources

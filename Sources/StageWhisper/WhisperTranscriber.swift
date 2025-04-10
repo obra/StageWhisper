@@ -377,12 +377,11 @@ class WhisperTranscriber {
                 withoutTimestamps: true,
                 compressionRatioThreshold: 1.0,  // Force results regardless of quality
                 logProbThreshold: -1.0,          // Super permissive to catch any sound
-                noSpeechThreshold: 1.0,          // Force recognition even with minimal audio
-                beamSize: 1                      // Ultra fast recognition, minimal complexity
+                noSpeechThreshold: 1.0           // Force recognition even with minimal audio
             )
             
             // Check the model state before transcription
-            print("CRITICAL: WhisperKit state before transcription: \(whisperKit.modelState.rawValue)")
+            print("CRITICAL: WhisperKit state before transcription: \(whisperKit.modelState)")
             
             // Try to transcribe with a timeout
             var results: [TranscriptionResult] = []
