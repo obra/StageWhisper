@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "swift-insert",
+    name: "StageWhisper",
     platforms: [
         .macOS("13.3")
     ],
     products: [
-        .executable(name: "swift-insert", targets: ["swift-insert"])
+        .executable(name: "StageWhisper", targets: ["StageWhisper"])
     ],
     dependencies: [
         .package(url: "https://github.com/soffes/HotKey", from: "0.1.0"),
@@ -16,10 +16,13 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "swift-insert",
+            name: "StageWhisper",
             dependencies: [
                 "HotKey",
                 .product(name: "WhisperKit", package: "WhisperKit")
+            ],
+            resources: [
+                .process("Resources")
             ])
     ]
 )
