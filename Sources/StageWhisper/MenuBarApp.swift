@@ -16,7 +16,7 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     private var isRecording = false
     private var whisperTranscriber: WhisperTranscriber?
     private var currentTranscription: String = ""
-    private var isStreamingMode = true  // Default to streaming mode
+    // Always use streaming mode
     
     // Prevent deallocation while app is running
     private var retainSelf: DictationAppDelegate?
@@ -26,6 +26,7 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     let recordingIcon = "🔴"
     let downloadingIcon = "⬇️"
     let loadingIcon = "⏳"
+    let processingIcon = "⚙️"
     let readyIcon = "✅"
     let errorIcon = "❌"
     
@@ -35,18 +36,14 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         // Retain self to prevent deallocation
         retainSelf = self
         
-        do {
-            // Initialize everything - order matters!
-            // First create the menu bar item
-            setupMenuBar()
-            // Then initialize other components
-            setupRecorder()
-            registerHotkey()
-            // Initialize WhisperKit last (will update the menu)
-            setupWhisper()
-        } catch {
-            print("ERROR: Failed to initialize application: \(error)")
-        }
+        // Initialize everything - order matters!
+        // First create the menu bar item
+        setupMenuBar()
+        // Then initialize other components
+        setupRecorder()
+        registerHotkey()
+        // Initialize WhisperKit last (will update the menu)
+        setupWhisper()
     }
     
     private func setupWhisper() {
@@ -135,29 +132,67 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     
     // MARK: - TranscriptionDelegate methods
     
+    // Track previous transcription to detect changes
+    private var previousTranscription: String = ""
+    
     func transcriptionDidUpdate(text: String, isFinal: Bool) {
-        // Update current transcription
+        // Store the new transcription
+        let oldTranscription = currentTranscription
         currentTranscription = text
         
-        // Update UI to show we have some text
-        if let statusItem = statusItem, let button = statusItem.button {
-            // Keep the recording icon, but add a text indicator
-            button.title = "\(recordingIcon) ..."
-            button.toolTip = "Transcribing: \(text.prefix(30))..."
+        // Print all transcription updates for debugging
+        if isFinal {
+            Swift.print("FINAL TRANSCRIPTION: \"\(text)\"")
+        } else {
+            Swift.print("Intermediate transcription: \"\(text)\"")
+            
+            // Get just the new part of the transcription to insert
+            if isRecording && !text.isEmpty {
+                // If we have a non-empty transcription and we're still recording,
+                // determine what's new to insert
+                if oldTranscription.isEmpty {
+                    // First transcription - insert everything
+                    self.insertPartialTranscription(text)
+                } else if text != oldTranscription {
+                    // Try to find what's been added
+                    let newText = self.getNewTextToInsert(oldText: oldTranscription, newText: text)
+                    if !newText.isEmpty {
+                        self.insertPartialTranscription(newText)
+                    }
+                }
+            }
+            
+            // Update UI with the current partial transcription for immediate feedback
+            if let statusItem = statusItem, let button = statusItem.button {
+                // Show first few characters of partial transcription
+                let previewText = text.prefix(15).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !previewText.isEmpty {
+                    button.title = "\(recordingIcon) \(previewText)..."
+                } else {
+                    button.title = "\(recordingIcon) ..."
+                }
+                button.toolTip = "Transcribing: \(text.prefix(30))..."
+            }
         }
         
-        // Print the current transcription in verbose mode
-        if Config.verbose {
-            print("Transcription updated: \"\(text)\"")
+        // Handle final transcription when not recording
+        if !isRecording && isFinal {
+            // This is the final result after stopping
+            Swift.print("Transcription complete. Final text will be inserted by keyUpHandler")
+            
+            // Update UI to indicate processing is complete but insertion is pending
+            if let statusItem = statusItem, let button = statusItem.button {
+                button.title = processingIcon
+                button.toolTip = "Processing complete. Inserting text..."
+            }
+            
+            // IMPORTANT: Do NOT insert text here - only keyUpHandler should do that
+            // This prevents the double insertion problem
         }
-        
-        // If it's the final result and we're still recording, 
-        // we don't need to do anything special here as the
-        // key-up handler will take care of inserting the text
     }
     
     func transcriptionDidError(error: Error) {
-        print("ERROR: Transcription error: \(error)")
+        Swift.print("ERROR: Transcription error: \(error)")
         
         // Update UI to show error
         if let statusItem = statusItem, let button = statusItem.button {
@@ -202,6 +237,60 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         recorder = AudioRecorder()
     }
     
+    /// Helper method to determine what new text to insert
+    private func getNewTextToInsert(oldText: String, newText: String) -> String {
+        // Method 1: If new text is longer and contains old text at the beginning
+        if newText.hasPrefix(oldText) {
+            // Just add the new content at the end
+            let startIndex = newText.index(newText.startIndex, offsetBy: oldText.count)
+            return String(newText[startIndex...])
+        }
+        
+        // Method 2: If old text is really different, just use whole new text
+        // This handles the case where model completely changes its prediction
+        if newText.count > oldText.count * 2 || !oldText.isEmpty && !newText.contains(oldText) {
+            return newText
+        }
+        
+        // Method 3: Simple diff calculation
+        var i = 0
+        while i < min(oldText.count, newText.count) {
+            let oldIndex = oldText.index(oldText.startIndex, offsetBy: i)
+            let newIndex = newText.index(newText.startIndex, offsetBy: i)
+            
+            if oldText[oldIndex] != newText[newIndex] {
+                break
+            }
+            i += 1
+        }
+        
+        // If all characters matched, but new text is longer, return the remainder
+        if i == oldText.count && newText.count > oldText.count {
+            let startIndex = newText.index(newText.startIndex, offsetBy: i)
+            return String(newText[startIndex...])
+        }
+        
+        // If we can't figure out what's new, just return empty
+        return ""
+    }
+    
+    /// Insert partial transcription in real-time
+    private func insertPartialTranscription(_ text: String) {
+        guard !text.isEmpty else { return }
+        
+        Swift.print("REAL-TIME: Inserting partial text: \"\(text)\"")
+        
+        // Insert text at cursor on main thread (must be main thread for UI operations)
+        DispatchQueue.main.async {
+            let success = insertTextAtCursor(text)
+            
+            if !success {
+                Swift.print("Failed to insert partial text, trying alternative method...")
+                _ = typeTextDirectly(text)
+            }
+        }
+    }
+    
     private func registerHotkey() {
         hotKey = HotKey(key: Config.hotkeyKey, modifiers: Config.hotkeyModifiers)
         
@@ -214,32 +303,26 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         hotKey.keyDownHandler = { [weak self] in
             guard let self = self, !self.isRecording else { return }
             
-            print("Recording started...")
+            Swift.print("Recording started...")
             if let statusItem = self.statusItem, let button = statusItem.button {
                 button.title = self.recordingIcon
             }
             
             guard let recorder = self.recorder else {
-                print("ERROR: Recorder not initialized")
+                Swift.print("ERROR: Recorder not initialized")
                 return
             }
             
             guard let transcriber = self.whisperTranscriber else {
-                print("ERROR: Transcriber not initialized")
+                Swift.print("ERROR: Transcriber not initialized")
                 return
             }
             
             // Reset current transcription
             self.currentTranscription = ""
             
-            // Start recording in streaming or normal mode based on setting
-            if isStreamingMode {
-                // Start recording with streaming transcription
-                recorder.startStreamingRecording(with: transcriber)
-            } else {
-                // Start recording in normal mode
-                recorder.startRecording()
-            }
+            // Start streaming transcription
+            recorder.startStreamingRecording(with: transcriber)
             
             self.isRecording = true
         }
@@ -247,99 +330,86 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         // Key up handler - stop recording and process transcription
         hotKey.keyUpHandler = { [weak self] in
             guard let self = self else {
-                print("ERROR: Self is nil in keyUpHandler")
+                Swift.print("ERROR: Self is nil in keyUpHandler")
                 return
             }
             
             guard self.isRecording else {
-                print("WARNING: Key up received but not recording - ignoring")
+                Swift.print("WARNING: Key up received but not recording - ignoring")
                 return
             }
             
-            print("Recording stopped. Finalizing transcription...")
+            Swift.print("Recording stopped. Finalizing transcription...")
             
-            // Update UI back to normal
+            // Update UI to show processing state
             if let statusItem = self.statusItem, let button = statusItem.button {
-                button.title = self.micIcon
+                button.title = self.processingIcon
+                button.toolTip = "Processing transcription..."
             }
             
             self.isRecording = false
             
             // Check recorder is valid
             guard let recorder = self.recorder else {
-                print("ERROR: Audio recorder is nil")
+                Swift.print("ERROR: Audio recorder is nil")
                 return
             }
             
-            if isStreamingMode {
-                // In streaming mode, we already have the transcription
-                let transcription = self.currentTranscription
+            // Create a task to finalize the transcription but now we'll handle final insertion differently
+            // since we're already inserting text in real-time
+            Task {
+                Swift.print("KEYUP HANDLER: Stopping recording and waiting for final transcription...")
+                
+                // Store what we have already inserted up to this point
+                let previouslyInserted = self.currentTranscription
                 
                 // Stop the streaming transcription
                 recorder.stopRecording()
                 
-                // Insert the transcribed text
-                if !transcription.isEmpty {
-                    print("Transcription complete: \"\(transcription)\"")
+                // Set a delay to allow final transcription processing
+                Swift.print("KEYUP HANDLER: Waiting for final transcription to complete...")
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 second delay
+                
+                // Get the final transcription after processing is done
+                let finalTranscription = self.currentTranscription
+                
+                if finalTranscription.isEmpty {
+                    Swift.print("KEYUP HANDLER: WARNING - Empty transcription result - nothing to insert")
+                } else if finalTranscription != previouslyInserted {
+                    Swift.print("KEYUP HANDLER: Final transcription differs from what was already inserted")
                     
-                    // Insert text at cursor on main thread
-                    DispatchQueue.main.async {
-                        print("Inserting text at cursor...")
-                        let success = insertTextAtCursor(transcription)
+                    // Calculate what new text to insert
+                    let newText = self.getNewTextToInsert(oldText: previouslyInserted, newText: finalTranscription)
+                    
+                    if !newText.isEmpty {
+                        Swift.print("KEYUP HANDLER: Inserting additional final text: \"\(newText)\"")
                         
-                        if !success {
-                            print("Failed to insert text, trying alternative method...")
-                            _ = typeTextDirectly(transcription)
+                        // Insert just the new text on main thread
+                        DispatchQueue.main.async {
+                            let success = insertTextAtCursor(newText)
+                            
+                            if !success {
+                                Swift.print("KEYUP HANDLER: Primary insertion failed, trying alternative method...")
+                                _ = typeTextDirectly(newText)
+                            }
+                            
+                            Swift.print("KEYUP HANDLER: Additional text insertion complete")
                         }
                     }
-                } else {
-                    print("WARNING: Empty transcription result - nothing to insert")
                 }
-            } else {
-                // In file mode, we need to transcribe the audio file
-                if let audioURL = recorder.stopRecording() {
-                    // Process transcription asynchronously
-                    Task {
-                        print("Processing audio file: \(audioURL.lastPathComponent)")
-                        
-                        // Check transcriber is valid
-                        guard let transcriber = self.whisperTranscriber else {
-                            print("ERROR: WhisperTranscriber is nil")
-                            return
-                        }
-                        
-                        // Transcribe audio
-                        print("Starting transcription...")
-                        if let transcription = await transcriber.transcribeAudioFile(at: audioURL) {
-                            print("Transcription complete: \"\(transcription)\"")
-                            
-                            // If empty transcription, don't try to insert
-                            guard !transcription.isEmpty else {
-                                print("WARNING: Empty transcription result - nothing to insert")
-                                return
-                            }
-                            
-                            // Insert text at cursor on main thread
-                            DispatchQueue.main.async {
-                                print("Inserting text at cursor...")
-                                let success = insertTextAtCursor(transcription)
-                                
-                                if !success {
-                                    print("Failed to insert text, trying alternative method...")
-                                    _ = typeTextDirectly(transcription)
-                                }
-                            }
-                        } else {
-                            print("ERROR: Transcription failed or returned nil")
-                        }
+                
+                // Update UI back to normal
+                DispatchQueue.main.async {
+                    if let statusItem = self.statusItem, let button = statusItem.button {
+                        button.title = self.micIcon
+                        button.toolTip = "StageWhisper - Press ⌘⇧Z to dictate"
                     }
-                } else {
-                    print("ERROR: No audio captured - recorder.stopRecording() returned nil")
                 }
             }
         }
         
-        print("Ready to record. Press \(Config.hotkeyModifiers.description)+\(Config.hotkeyKey.description) to dictate.")
+        // Log ready state
+        Swift.print("Ready to record. Press \(Config.hotkeyModifiers.description)+\(Config.hotkeyKey.description) to dictate.")
     }
 }
 
@@ -383,12 +453,13 @@ func startDictationAppUI() {
     // Create the delegate
     let dictationDelegate = DictationAppDelegate()
     
-    // Store a reference to the dictation delegate
-    objc_setAssociatedObject(NSApp, "dictationDelegate", dictationDelegate, .OBJC_ASSOCIATION_RETAIN)
+    // Store a reference to the dictation delegate using a static property to keep it alive
+    let _ = dictationDelegate // Force strong reference to prevent deallocation
+    objc_setAssociatedObject(NSApplication.shared, "dictationDelegate", dictationDelegate, .OBJC_ASSOCIATION_RETAIN)
     
     // Since we're already running within the NSApplication context,
     // we just need to register our dictation delegate to handle the UI
-    NSApp.activate(ignoringOtherApps: true)
+    NSApplication.shared.activate(ignoringOtherApps: true)
     
     // Initialize the delegate
     dictationDelegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
