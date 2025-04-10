@@ -16,7 +16,8 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     private var isRecording = false
     private var whisperTranscriber: WhisperTranscriber?
     private var currentTranscription: String = ""
-    // Always use streaming mode
+    // Track previous transcription to detect changes
+    private var previousTranscription: String = ""
     
     // Prevent deallocation while app is running
     private var retainSelf: DictationAppDelegate?
@@ -132,9 +133,6 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
     
     // MARK: - TranscriptionDelegate methods
     
-    // Track previous transcription to detect changes
-    private var previousTranscription: String = ""
-    
     func transcriptionDidUpdate(text: String, isFinal: Bool) {
         // Print transcription updates for debugging
         if isFinal {
@@ -171,18 +169,17 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
         // Store the new transcription AFTER processing
         previousTranscription = text
         currentTranscription = text
-            
-            // Update UI with the current partial transcription for immediate feedback
-            if let statusItem = statusItem, let button = statusItem.button {
-                // Show first few characters of partial transcription
-                let previewText = text.prefix(15).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !previewText.isEmpty {
-                    button.title = "\(recordingIcon) \(previewText)..."
-                } else {
-                    button.title = "\(recordingIcon) ..."
-                }
-                button.toolTip = "Transcribing: \(text.prefix(30))..."
+        
+        // Update UI with the current partial transcription for immediate feedback
+        if let statusItem = statusItem, let button = statusItem.button {
+            // Show first few characters of partial transcription
+            let previewText = text.prefix(15).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !previewText.isEmpty {
+                button.title = "\(recordingIcon) \(previewText)..."
+            } else {
+                button.title = "\(recordingIcon) ..."
             }
+            button.toolTip = "Transcribing: \(text.prefix(30))..."
         }
         
         // Handle final transcription when not recording
@@ -197,7 +194,6 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
             }
             
             // IMPORTANT: Do NOT insert text here - only keyUpHandler should do that
-            // This prevents the double insertion problem
         }
     }
     
@@ -348,6 +344,7 @@ class DictationAppDelegate: NSObject, NSApplicationDelegate, TranscriptionDelega
             
             // Reset current transcription
             self.currentTranscription = ""
+            self.previousTranscription = ""
             
             // Start streaming transcription
             recorder.startStreamingRecording(with: transcriber)
